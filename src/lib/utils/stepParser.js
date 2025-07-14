@@ -54,6 +54,13 @@ class StepParser {
 
             // Verification patterns
             {
+                regex: /(?:verify|check|assert)\s+(?:that\s+)?(?:the\s+)?page\s+has\s+(link|button|element)\s+with\s+text[,\s]*['"]([^'"]+)['"](?:\s+is\s+(?:visible|displayed|shown))?/i,
+                action: 'verify',
+                target: 1,
+                value: 2,
+                assertion: 'visible'
+            },
+            {
                 regex: /(?:verify|check|assert)\s+(?:that\s+)?(?:the\s+)?(.+?)\s+(?:is\s+)?(?:visible|displayed|shown)/i,
                 action: 'verify',
                 target: 1,

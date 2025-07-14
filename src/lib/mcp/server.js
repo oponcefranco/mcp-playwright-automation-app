@@ -454,9 +454,9 @@ ${testCode}`;
     }
 
     generatePlaywrightConfig(options, outputDir) {
-        return `const { defineConfig } = require('@playwright/test');
+        return `import { defineConfig } from '@playwright/test';
 
-module.exports = defineConfig({
+export default defineConfig({
   testDir: '.',
   outputDir: '${outputDir}/results',
   timeout: ${options.timeout || 30000},

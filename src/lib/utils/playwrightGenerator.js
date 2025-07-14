@@ -135,6 +135,36 @@ test('${name}', async ({ page }) => {${hasAuth ? '\n  const authHelper = new Aut
     }
   }
 
+  escapeQuotesForSelector(text) {
+    if (!text) return '';
+    return text.replace(/"/g, '\\"').replace(/'/g, "\\'");
+  }
+
+  extractLinkText(target) {
+    // Handle patterns like "link, 'More information...'" or 'link "More information..."'
+    const linkMatch = target.match(/link[,\s]*["']([^"']+)["']/i);
+    if (linkMatch) {
+      return linkMatch[1];
+    }
+    
+    // Handle patterns like "More information... link" 
+    const textLinkMatch = target.match(/["']([^"']+)["'][,\s]*link/i);
+    if (textLinkMatch) {
+      return textLinkMatch[1];
+    }
+    
+    // Fallback: remove "link" and clean up remaining text
+    let linkText = target.replace(/link/gi, '').trim();
+    
+    // Remove leading comma and whitespace
+    linkText = linkText.replace(/^[,\s]+/, '');
+    
+    // Remove surrounding quotes
+    linkText = linkText.replace(/^["']|["']$/g, '');
+    
+    return linkText;
+  }
+
   generateSelector(target) {
     if (!target) {
       console.warn('⚠️ No target provided for selector generation');
@@ -167,45 +197,69 @@ test('${name}', async ({ page }) => {${hasAuth ? '\n  const authHelper = new Aut
     // Generate selector based on text content
     if (target.includes('button')) {
       const buttonText = target.replace(/button/gi, '').trim();
-      return `button:has-text("${buttonText}")`;
+      const escapedText = this.escapeQuotesForSelector(buttonText);
+      return `button:has-text("${escapedText}")`;
     }
 
     if (target.includes('link')) {
-      const linkText = target.replace(/link/gi, '').trim();
-      return `a:has-text("${linkText}")`;
+      const linkText = this.extractLinkText(target);
+      const escapedText = this.escapeQuotesForSelector(linkText);
+      return `a:has-text("${escapedText}")`;
     }
 
     // Default: try to find by text or data-testid
     const cleanTarget = target.replace(/['"]/g, '');
-    return `[data-testid="${cleanTarget}"], :has-text("${cleanTarget}")`;
+    const escapedTarget = this.escapeQuotesForSelector(cleanTarget);
+    return `[data-testid="${escapedTarget}"], :has-text("${escapedTarget}")`;
   }
 
   generateAssertionCode(target, value, assertion) {
-    const selector = this.generateSelector(target);
+    let selector;
+    let description;
+    
+    // Handle specific patterns where target is element type and value is the text
+    if ((target === 'link' || target === 'button' || target === 'element') && value) {
+      if (target === 'link') {
+        const escapedText = this.escapeQuotesForSelector(value);
+        selector = `a:has-text("${escapedText}")`;
+        description = `link with text "${value}"`;
+      } else if (target === 'button') {
+        const escapedText = this.escapeQuotesForSelector(value);
+        selector = `button:has-text("${escapedText}")`;
+        description = `button with text "${value}"`;
+      } else {
+        const escapedText = this.escapeQuotesForSelector(value);
+        selector = `:has-text("${escapedText}")`;
+        description = `element with text "${value}"`;
+      }
+    } else {
+      selector = this.generateSelector(target);
+      description = target;
+    }
 
     if (assertion) {
       switch (assertion.toLowerCase()) {
         case 'visible':
-          return `// Verify ${target} is visible
+          return `// Verify ${description} is visible
   await expect(page.locator('${selector}')).toBeVisible();`;
 
         case 'text':
         case 'contains':
-          return `// Verify ${target} contains text '${value}'
+          return `// Verify ${description} contains text '${value}'
   await expect(page.locator('${selector}')).toContainText('${value}');`;
 
         default:
-          return `// Verify ${target}
+          return `// Verify ${description}
   await expect(page.locator('${selector}')).toContainText('${value || assertion}');`;
       }
     }
 
     // Default verification
-    if (value) {
-      return `// Verify ${target} contains '${value}'
+    if (value && !(target === 'link' || target === 'button' || target === 'element')) {
+      return `// Verify ${description} contains '${value}'
   await expect(page.locator('${selector}')).toContainText('${value}');`;
     } else {
-      return `// Verify ${target} is visible
+      return `// Verify ${description} is visible
   await expect(page.locator('${selector}')).toBeVisible();`;
     }
   }

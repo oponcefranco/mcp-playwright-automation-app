@@ -21,11 +21,17 @@
     let executionLogs = [];
     let mcpStatus = "disconnected";
 
+    // Reactive statement to sync runConfig back to store
+    $: if (runConfig) {
+        testStore.updateRunConfig(runConfig);
+    }
+
     // Subscribe to stores
     onMount(() => {
         const testUnsubscribe = testStore.subscribe((state) => {
             tests = state.tests || [];
             results = state.results || [];
+            runConfig = { ...runConfig, ...state.runConfig };
         });
 
         const mcpUnsubscribe = mcpStore.subscribe((state) => {
