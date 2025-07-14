@@ -56,6 +56,8 @@
   let importedData = null;
   let configChanged = false;
   let savedSuccessfully = false;
+  let isLoadingSettings = false;
+  let lastSavedConfig = null;
 
   // Subscribe to stores
   onMount(() => {
@@ -78,14 +80,30 @@
     };
   });
 
-  // Watch for changes
-  $: if (runConfig || mcpConfig || globalSettings || authSettings) {
-    configChanged = true;
-    savedSuccessfully = false;
+  // Watch for actual config changes by comparing with last saved state
+  $: {
+    if (!isLoadingSettings && lastSavedConfig) {
+      const currentConfig = {
+        runConfig,
+        mcpConfig,
+        globalSettings,
+        authSettings
+      };
+      
+      const hasChanges = JSON.stringify(currentConfig) !== JSON.stringify(lastSavedConfig);
+      
+      if (hasChanges && !configChanged) {
+        configChanged = true;
+        savedSuccessfully = false;
+      } else if (!hasChanges && configChanged) {
+        configChanged = false;
+      }
+    }
   }
 
   function loadSettings() {
     try {
+      isLoadingSettings = true;
       const saved = localStorage.getItem('playwright-automation-config');
       if (saved) {
         const config = JSON.parse(saved);
@@ -95,8 +113,20 @@
         authSettings = { ...authSettings, ...config.authSettings };
         console.log('⚙️ Settings loaded from localStorage');
       }
+      
+      // Reset flags and save baseline after loading
+      configChanged = false;
+      savedSuccessfully = false;
+      lastSavedConfig = {
+        runConfig: { ...runConfig },
+        mcpConfig: { ...mcpConfig },
+        globalSettings: { ...globalSettings },
+        authSettings: { ...authSettings }
+      };
     } catch (error) {
       console.error('❌ Error loading settings:', error);
+    } finally {
+      isLoadingSettings = false;
     }
   }
 
@@ -117,6 +147,14 @@
 
       configChanged = false;
       savedSuccessfully = true;
+      
+      // Update the baseline with current config
+      lastSavedConfig = {
+        runConfig: { ...runConfig },
+        mcpConfig: { ...mcpConfig },
+        globalSettings: { ...globalSettings },
+        authSettings: { ...authSettings }
+      };
 
       console.log('✅ Settings saved successfully');
 
@@ -133,6 +171,8 @@
 
   function resetToDefaults() {
     if (confirm('Are you sure you want to reset all settings to defaults? This cannot be undone.')) {
+      isLoadingSettings = true;
+      
       runConfig = {
         browser: 'chromium',
         headless: true,
@@ -167,6 +207,16 @@
         customAuth: ''
       };
 
+      isLoadingSettings = false;
+      
+      // Update baseline before saving
+      lastSavedConfig = {
+        runConfig: { ...runConfig },
+        mcpConfig: { ...mcpConfig },
+        globalSettings: { ...globalSettings },
+        authSettings: { ...authSettings }
+      };
+      
       saveSettings();
     }
   }
@@ -245,6 +295,7 @@
       }
 
       if (importedData.settings) {
+        isLoadingSettings = true;
         if (importedData.settings.runConfig) {
           runConfig = { ...runConfig, ...importedData.settings.runConfig };
         }
@@ -257,6 +308,15 @@
         if (importedData.settings.authSettings) {
           authSettings = { ...authSettings, ...importedData.settings.authSettings };
         }
+        isLoadingSettings = false;
+        
+        // Update baseline after import
+        lastSavedConfig = {
+          runConfig: { ...runConfig },
+          mcpConfig: { ...mcpConfig },
+          globalSettings: { ...globalSettings },
+          authSettings: { ...authSettings }
+        };
       }
 
       saveSettings();
@@ -310,7 +370,8 @@
       <div class="config-section">
         <h3 class="config-title">🌐 Browser & Test Settings</h3>
 
-        <div class="form-grid">
+        <form on:submit|preventDefault={() => {}}>
+          <div class="form-grid">
           <div class="form-group">
             <label for="default-browser" class="form-label">Default Browser</label>
             <select id="default-browser" bind:value={runConfig.browser} class="form-select">
@@ -334,8 +395,9 @@
           </div>
 
           <div class="form-group">
-            <label class="form-label">Retries</label>
+            <label for="retries" class="form-label">Retries</label>
             <input
+                    id="retries"
                     type="number"
                     bind:value={runConfig.retries}
                     min="0"
@@ -345,8 +407,9 @@
           </div>
 
           <div class="form-group">
-            <label class="form-label">Slow Motion (ms)</label>
+            <label for="slow-motion" class="form-label">Slow Motion (ms)</label>
             <input
+                    id="slow-motion"
                     type="number"
                     bind:value={runConfig.slowMo}
                     min="0"
@@ -357,8 +420,9 @@
           </div>
 
           <div class="form-group">
-            <label class="form-label">Viewport Width</label>
+            <label for="viewport-width" class="form-label">Viewport Width</label>
             <input
+                    id="viewport-width"
                     type="number"
                     bind:value={runConfig.viewport.width}
                     min="320"
@@ -368,8 +432,9 @@
           </div>
 
           <div class="form-group">
-            <label class="form-label">Viewport Height</label>
+            <label for="viewport-height" class="form-label">Viewport Height</label>
             <input
+                    id="viewport-height"
                     type="number"
                     bind:value={runConfig.viewport.height}
                     min="240"
@@ -379,26 +444,29 @@
           </div>
         </div>
 
-        <div class="checkbox-group">
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={runConfig.headless} class="checkbox-input" />
-            <span class="checkbox-text">Headless Mode</span>
-          </label>
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={runConfig.parallel} class="checkbox-input" />
-            <span class="checkbox-text">Parallel Execution</span>
-          </label>
-        </div>
+          <div class="checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" bind:checked={runConfig.headless} class="checkbox-input" />
+              <span class="checkbox-text">Headless Mode</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" bind:checked={runConfig.parallel} class="checkbox-input" />
+              <span class="checkbox-text">Parallel Execution</span>
+            </label>
+          </div>
+        </form>
       </div>
 
       <!-- MCP Server Configuration -->
       <div class="config-section">
         <h3 class="config-title">🤖 MCP Server Settings</h3>
 
-        <div class="form-grid">
+        <form on:submit|preventDefault={() => {}}>
+          <div class="form-grid">
           <div class="form-group form-group-full">
-            <label class="form-label">Server URL</label>
+            <label for="server-url" class="form-label">Server URL</label>
             <input
+                    id="server-url"
                     type="url"
                     bind:value={mcpConfig.serverUrl}
                     placeholder="http://localhost:3001"
@@ -407,8 +475,9 @@
           </div>
 
           <div class="form-group">
-            <label class="form-label">Connection Timeout (ms)</label>
+            <label for="connection-timeout" class="form-label">Connection Timeout (ms)</label>
             <input
+                    id="connection-timeout"
                     type="number"
                     bind:value={mcpConfig.timeout}
                     min="1000"
@@ -419,8 +488,9 @@
           </div>
 
           <div class="form-group">
-            <label class="form-label">Retry Attempts</label>
+            <label for="retry-attempts" class="form-label">Retry Attempts</label>
             <input
+                    id="retry-attempts"
                     type="number"
                     bind:value={mcpConfig.retryAttempts}
                     min="1"
@@ -430,28 +500,30 @@
           </div>
         </div>
 
-        <div class="checkbox-group">
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={mcpConfig.autoConnect} class="checkbox-input" />
-            <span class="checkbox-text">Auto-connect on startup</span>
-          </label>
-        </div>
+          <div class="checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" bind:checked={mcpConfig.autoConnect} class="checkbox-input" />
+              <span class="checkbox-text">Auto-connect on startup</span>
+            </label>
+          </div>
 
-        <div class="action-row">
-          <button on:click={testMcpConnection} class="btn btn-secondary">
-            🔌 Test Connection
-          </button>
-        </div>
+          <div class="action-row">
+            <button on:click={testMcpConnection} class="btn btn-secondary">
+              🔌 Test Connection
+            </button>
+          </div>
+        </form>
       </div>
 
       <!-- Global Application Settings -->
       <div class="config-section">
         <h3 class="config-title">🎨 Application Settings</h3>
 
-        <div class="form-grid">
+        <form on:submit|preventDefault={() => {}}>
+          <div class="form-grid">
           <div class="form-group">
-            <label class="form-label">Theme</label>
-            <select bind:value={globalSettings.theme} class="form-select">
+            <label for="theme" class="form-label">Theme</label>
+            <select id="theme" bind:value={globalSettings.theme} class="form-select">
               <option value="light">Light</option>
               <option value="dark">Dark</option>
               <option value="auto">Auto (System)</option>
@@ -459,8 +531,9 @@
           </div>
 
           <div class="form-group">
-            <label class="form-label">Max Log Entries</label>
+            <label for="max-log-entries" class="form-label">Max Log Entries</label>
             <input
+                    id="max-log-entries"
                     type="number"
                     bind:value={globalSettings.maxLogEntries}
                     min="100"
@@ -471,93 +544,104 @@
           </div>
         </div>
 
-        <div class="checkbox-group">
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={globalSettings.autoSave} class="checkbox-input" />
-            <span class="checkbox-text">Auto-save tests</span>
-          </label>
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={globalSettings.notifications} class="checkbox-input" />
-            <span class="checkbox-text">Show notifications</span>
-          </label>
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={globalSettings.debugMode} class="checkbox-input" />
-            <span class="checkbox-text">Debug mode</span>
-          </label>
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={globalSettings.clearLogsOnRun} class="checkbox-input" />
-            <span class="checkbox-text">Clear logs on test run</span>
-          </label>
-        </div>
+          <div class="checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" bind:checked={globalSettings.autoSave} class="checkbox-input" />
+              <span class="checkbox-text">Auto-save tests</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" bind:checked={globalSettings.notifications} class="checkbox-input" />
+              <span class="checkbox-text">Show notifications</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" bind:checked={globalSettings.debugMode} class="checkbox-input" />
+              <span class="checkbox-text">Debug mode</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" bind:checked={globalSettings.clearLogsOnRun} class="checkbox-input" />
+              <span class="checkbox-text">Clear logs on test run</span>
+            </label>
+          </div>
+        </form>
       </div>
 
       <!-- Authentication Settings -->
       <div class="config-section">
         <h3 class="config-title">🔐 Authentication Settings</h3>
 
-        <div class="form-group">
-          <label for="default-headers" class="form-label">Default Headers (JSON)</label>
-          <textarea
-                  id="default-headers"
-                  bind:value={authSettings.defaultHeaders}
-                  rows="4"
-                  class="form-textarea"
-                  placeholder={'{"User-Agent": "Playwright Test Runner"}'}
-          ></textarea>
-        </div>
-
-        <div class="form-grid">
+        <form on:submit|preventDefault={() => {}}>
           <div class="form-group">
-            <label class="form-label">API Key</label>
-            <input
-                    type="password"
-                    bind:value={authSettings.apiKey}
-                    placeholder="Enter API key"
-                    class="form-input"
-            />
+            <label for="default-headers" class="form-label">Default Headers (JSON)</label>
+            <textarea
+                    id="default-headers"
+                    bind:value={authSettings.defaultHeaders}
+                    rows="4"
+                    class="form-textarea"
+                    placeholder={'{"User-Agent": "Playwright Test Runner"}'}
+            ></textarea>
+          </div>
+
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="api-key" class="form-label">API Key</label>
+              <input
+                      id="api-key"
+                      type="password"
+                      bind:value={authSettings.apiKey}
+                      placeholder="Enter API key"
+                      class="form-input"
+                      autocomplete="off"
+              />
+            </div>
+
+            <div class="form-group">
+              <label for="bearer-token" class="form-label">Bearer Token</label>
+              <input
+                      id="bearer-token"
+                      type="password"
+                      bind:value={authSettings.bearerToken}
+                      placeholder="Enter bearer token"
+                      class="form-input"
+                      autocomplete="off"
+              />
+            </div>
+
+            <div class="form-group">
+              <label for="basic-auth-username" class="form-label">Basic Auth Username</label>
+              <input
+                      id="basic-auth-username"
+                      type="text"
+                      bind:value={authSettings.basicAuth.username}
+                      placeholder="Username"
+                      class="form-input"
+                      autocomplete="username"
+              />
+            </div>
+
+            <div class="form-group">
+              <label for="basic-auth-password" class="form-label">Basic Auth Password</label>
+              <input
+                      id="basic-auth-password"
+                      type="password"
+                      bind:value={authSettings.basicAuth.password}
+                      placeholder="Password"
+                      class="form-input"
+                      autocomplete="current-password"
+              />
+            </div>
           </div>
 
           <div class="form-group">
-            <label class="form-label">Bearer Token</label>
-            <input
-                    type="password"
-                    bind:value={authSettings.bearerToken}
-                    placeholder="Enter bearer token"
-                    class="form-input"
-            />
+            <label for="custom-auth" class="form-label">Custom Authentication Script</label>
+            <textarea
+                    id="custom-auth"
+                    bind:value={authSettings.customAuth}
+                    rows="3"
+                    class="form-textarea"
+                    placeholder="// Custom authentication logic (JavaScript)&#10;// Example: await page.setExtraHTTPHeaders(headers);"
+            ></textarea>
           </div>
-
-          <div class="form-group">
-            <label class="form-label">Basic Auth Username</label>
-            <input
-                    type="text"
-                    bind:value={authSettings.basicAuth.username}
-                    placeholder="Username"
-                    class="form-input"
-            />
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">Basic Auth Password</label>
-            <input
-                    type="password"
-                    bind:value={authSettings.basicAuth.password}
-                    placeholder="Password"
-                    class="form-input"
-            />
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label for="custom-auth" class="form-label">Custom Authentication Script</label>
-          <textarea
-                  id="custom-auth"
-                  bind:value={authSettings.customAuth}
-                  rows="3"
-                  class="form-textarea"
-                  placeholder="// Custom authentication logic (JavaScript)&#10;// Example: await page.setExtraHTTPHeaders(headers);"
-          ></textarea>
-        </div>
+        </form>
       </div>
     </div>
   </div>

@@ -242,15 +242,26 @@ class PlaywrightMCPServer {
                         exitCode: code
                     });
 
-                    // Send completion message
-                    this.sendMessage(client.ws, {
+                    // Send completion message with enhanced error details
+                    const enhancedMessage = {
                         type: 'test_completed',
                         executionId,
                         results,
                         status: code === 0 ? 'passed' : 'failed',
                         exitCode: code,
-                        timestamp: Date.now()
-                    });
+                        timestamp: Date.now(),
+                        // Enhanced error information
+                        detailedResults: {
+                            summary: results.summary || {},
+                            tests: results.tests || [],
+                            stdout: results.stdout || '',
+                            stderr: results.stderr || '',
+                            duration: results.duration || 0,
+                            error: results.error || null
+                        }
+                    };
+                    console.log('🔍 Sending enhanced test completion message:', JSON.stringify(enhancedMessage, null, 2));
+                    this.sendMessage(client.ws, enhancedMessage);
 
                     // Clean up
                     this.runningTests.delete(executionId);

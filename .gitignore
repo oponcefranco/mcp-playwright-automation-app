@@ -143,3 +143,6 @@ vite.config.ts.timestamp-*
 
 # JetBrains IDEs
 .idea/
+
+# MCP Server temporary files
+mcp-server/

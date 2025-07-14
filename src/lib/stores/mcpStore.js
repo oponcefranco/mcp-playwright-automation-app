@@ -187,6 +187,7 @@ function createMCPStore() {
           break;
 
         case 'test_completed':
+          console.log('🔍 Test completed message received:', message);
           this.updateState(state => {
             const newRunningTests = new Map(state.runningTests);
             newRunningTests.delete(message.executionId);
@@ -194,12 +195,17 @@ function createMCPStore() {
           });
 
           // Emit custom event for test completion
+          const eventDetail = {
+            executionId: message.executionId,
+            results: message.results,
+            status: message.status,
+            detailedResults: message.detailedResults,
+            exitCode: message.exitCode,
+            error: message.results?.error || null
+          };
+          console.log('🔍 Emitting mcpTestCompleted event with detail:', eventDetail);
           window.dispatchEvent(new CustomEvent('mcpTestCompleted', {
-            detail: {
-              executionId: message.executionId,
-              results: message.results,
-              status: message.status
-            }
+            detail: eventDetail
           }));
           break;
 
