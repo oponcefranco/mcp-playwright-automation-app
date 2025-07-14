@@ -479,6 +479,8 @@
     resize: vertical;
     font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
     font-size: 0.8rem;
+    min-width: 350px;
+    width: 100%;
   }
 
   .steps-preview {

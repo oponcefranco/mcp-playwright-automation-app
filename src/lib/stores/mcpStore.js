@@ -1,300 +1,326 @@
 // lib/stores/mcpStore.js
+
 import { writable } from 'svelte/store';
 
-class MCPStore {
-  constructor() {
-    this.state = writable({
-      status: 'disconnected', // disconnected, connecting, connected, error
-      server: null,
-      lastError: null,
-      connectionAttempts: 0,
-      serverInfo: null,
-      isReconnecting: false
-    });
-    
-    this.ws = null;
-    this.reconnectInterval = null;
-    this.heartbeatInterval = null;
-    this.reconnectDelay = 5000; // 5 seconds
-    this.maxReconnectAttempts = 5;
-  }
+function createMCPStore() {
+  const initialState = {
+    status: 'disconnected', // 'disconnected', 'connecting', 'connected', 'error'
+    ws: null,
+    serverInfo: null,
+    lastError: null,
+    connectionAttempts: 0,
+    isReconnecting: false,
+    runningTests: new Map(),
+    testLogs: new Map()
+  };
 
-  subscribe(callback) {
-    return this.state.subscribe(callback);
-  }
+  const { subscribe, set, update } = writable(initialState);
 
-  async connect() {
-    this.updateState({ status: 'connecting' });
-    
-    try {
-      // Try to connect to MCP server
-      this.ws = new WebSocket('ws://localhost:8080/mcp');
-      
-      this.ws.onopen = () => {
-        console.log('✅ Connected to MCP server');
-        this.updateState({ 
-          status: 'connected',
-          lastError: null,
-          connectionAttempts: 0,
-          isReconnecting: false
-        });
-        
-        this.startHeartbeat();
-        this.sendHandshake();
-      };
+  let reconnectInterval = null;
+  const maxReconnectAttempts = 5;
+  const reconnectDelay = 3000;
 
-      this.ws.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          this.handleMessage(message);
-        } catch (error) {
-          console.error('Error parsing MCP message:', error);
-        }
-      };
+  const store = {
+    subscribe,
 
-      this.ws.onclose = (event) => {
-        console.log('🔌 Disconnected from MCP server:', event.code, event.reason);
-        this.updateState({ status: 'disconnected' });
-        this.stopHeartbeat();
-        this.scheduleReconnect();
-      };
+    // Internal methods
+    updateState(updater) {
+      update(state => typeof updater === 'function' ? updater(state) : { ...state, ...updater });
+    },
 
-      this.ws.onerror = (error) => {
-        console.error('❌ MCP WebSocket error:', error);
-        this.updateState({ 
-          status: 'error',
-          lastError: 'Connection failed - Make sure MCP server is running on port 8080'
-        });
-      };
+    getCurrentState() {
+      let currentState;
+      this.subscribe(state => currentState = state)();
+      return currentState;
+    },
 
-    } catch (error) {
-      console.error('❌ Failed to connect to MCP server:', error);
-      this.updateState({ 
-        status: 'error',
-        lastError: error.message
-      });
-    }
-  }
+    // Connection management
+    connect() {
+      console.log('🔌 Attempting to connect to MCP server...');
 
-  disconnect() {
-    if (this.reconnectInterval) {
-      clearInterval(this.reconnectInterval);
-      this.reconnectInterval = null;
-    }
-
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
-    
-    this.stopHeartbeat();
-    this.updateState({ status: 'disconnected', isReconnecting: false });
-  }
-
-  sendHandshake() {
-    this.sendMessage({
-      type: 'handshake',
-      data: {
-        clientName: 'Playwright Automation App',
-        version: '1.0.0',
-        capabilities: ['browser', 'api', 'test-execution']
-      }
-    });
-  }
-
-  startHeartbeat() {
-    this.heartbeatInterval = setInterval(() => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.sendMessage({ type: 'ping' });
-      }
-    }, 30000); // 30 seconds
-  }
-
-  stopHeartbeat() {
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-      this.heartbeatInterval = null;
-    }
-  }
-
-  scheduleReconnect() {
-    if (this.reconnectInterval) return;
-
-    const currentState = this.getCurrentState();
-    if (currentState.connectionAttempts >= this.maxReconnectAttempts) {
-      this.updateState({ 
-        status: 'error',
-        lastError: 'Max reconnection attempts reached. Please check MCP server.'
-      });
-      return;
-    }
-    
-    this.updateState({ isReconnecting: true });
-    
-    this.reconnectInterval = setTimeout(() => {
-      this.state.update(state => ({
-        ...state,
-        connectionAttempts: state.connectionAttempts + 1
-      }));
-      
-      console.log(`🔄 Attempting to reconnect to MCP server (attempt ${this.getConnectionAttempts() + 1})`);
-      this.connect();
-      this.reconnectInterval = null;
-    }, this.reconnectDelay);
-  }
-
-  sendMessage(message) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(message));
-      return true;
-    }
-    console.warn('⚠️ Cannot send message: MCP not connected');
-    return false;
-  }
-
-  handleMessage(message) {
-    switch (message.type) {
-      case 'handshake_response':
-        console.log('🤝 MCP Handshake successful:', message.data);
-        this.updateState({ serverInfo: message.data });
-        break;
-        
-      case 'pong':
-        // Heartbeat response - connection is alive
-        break;
-        
-      case 'test_result':
-        this.handleTestResult(message.data);
-        break;
-        
-      case 'browser_event':
-        this.handleBrowserEvent(message.data);
-        break;
-
-      case 'error':
-        console.error('🚨 MCP Server Error:', message.message);
-        this.updateState({ lastError: message.message });
-        break;
-        
-      default:
-        console.log('📨 Unhandled MCP message:', message);
-    }
-  }
-
-  handleTestResult(result) {
-    // Dispatch test result to other parts of the app
-    window.dispatchEvent(new CustomEvent('mcp-test-result', { 
-      detail: result 
-    }));
-  }
-
-  handleBrowserEvent(event) {
-    // Handle browser automation events
-    window.dispatchEvent(new CustomEvent('mcp-browser-event', { 
-      detail: event 
-    }));
-  }
-
-  async runTest(testCode, options = {}) {
-    return new Promise((resolve, reject) => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        reject(new Error('MCP server not connected. Please start the MCP server first.'));
+      const currentState = this.getCurrentState();
+      if (currentState.status === 'connecting' || currentState.status === 'connected') {
+        console.log('⚠️ Already connecting or connected');
         return;
       }
 
-      const requestId = Date.now().toString();
-      
-      // Set up response handler
-      const handleResponse = (event) => {
-        const result = event.detail;
-        if (result.requestId === requestId) {
-          window.removeEventListener('mcp-test-result', handleResponse);
-          resolve(result);
-        }
-      };
-      
-      window.addEventListener('mcp-test-result', handleResponse);
-      
-      // Send test execution request
-      const success = this.sendMessage({
-        type: 'run_test',
-        requestId,
-        data: {
-          testCode,
-          options: {
-            headless: options.headless ?? true,
-            browser: options.browser ?? 'chromium',
-            timeout: options.timeout ?? 30000,
-            ...options
+      this.updateState({ status: 'connecting', lastError: null });
+
+      try {
+        const ws = new WebSocket('ws://localhost:8080/mcp');
+
+        ws.onopen = () => {
+          console.log('✅ Connected to MCP server');
+          this.updateState({
+            status: 'connected',
+            ws,
+            connectionAttempts: 0,
+            isReconnecting: false,
+            lastError: null
+          });
+          this.clearReconnectInterval();
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            this.handleMessage(message);
+          } catch (error) {
+            console.error('❌ Error parsing MCP message:', error);
           }
-        }
+        };
+
+        ws.onclose = (event) => {
+          console.log(`🔌 Disconnected from MCP server: ${event.code}`, event.reason);
+          this.updateState({
+            status: 'disconnected',
+            ws: null,
+            lastError: event.reason || `Connection closed (${event.code})`
+          });
+
+          if (event.code !== 1000) { // Not a normal closure
+            this.scheduleReconnect();
+          }
+        };
+
+        ws.onerror = (error) => {
+          console.error('❌ MCP WebSocket error:', error);
+          this.updateState({
+            status: 'error',
+            lastError: 'WebSocket connection failed'
+          });
+          this.scheduleReconnect();
+        };
+
+        this.updateState({ ws });
+
+      } catch (error) {
+        console.error('❌ Error creating WebSocket connection:', error);
+        this.updateState({
+          status: 'error',
+          lastError: error.message
+        });
+        this.scheduleReconnect();
+      }
+    },
+
+    disconnect() {
+      console.log('🔌 Disconnecting from MCP server...');
+      const currentState = this.getCurrentState();
+
+      this.clearReconnectInterval();
+
+      if (currentState.ws) {
+        currentState.ws.close(1000, 'Client disconnect');
+      }
+
+      this.updateState({
+        status: 'disconnected',
+        ws: null,
+        isReconnecting: false
       });
+    },
 
-      if (!success) {
-        window.removeEventListener('mcp-test-result', handleResponse);
-        reject(new Error('Failed to send test execution request'));
-        return;
-      }
-      
-      // Set timeout for the request
-      setTimeout(() => {
-        window.removeEventListener('mcp-test-result', handleResponse);
-        reject(new Error('Test execution timeout - no response from MCP server'));
-      }, (options.timeout ?? 30000) + 10000); // Add 10s buffer
-    });
-  }
+    scheduleReconnect() {
+      if (reconnectInterval) return;
 
-  async takeScreenshot() {
-    return new Promise((resolve, reject) => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        reject(new Error('MCP server not connected'));
+      const currentState = this.getCurrentState();
+      if (currentState.connectionAttempts >= maxReconnectAttempts) {
+        this.updateState({
+          status: 'error',
+          lastError: 'Max reconnection attempts reached. Please check MCP server.'
+        });
         return;
       }
 
-      const requestId = Date.now().toString();
-      
-      const handleResponse = (event) => {
-        const result = event.detail;
-        if (result.requestId === requestId) {
-          window.removeEventListener('mcp-browser-event', handleResponse);
-          resolve(result.screenshot);
-        }
+      this.updateState({ isReconnecting: true });
+
+      reconnectInterval = setTimeout(() => {
+        const state = this.getCurrentState();
+        this.updateState({
+          connectionAttempts: state.connectionAttempts + 1
+        });
+
+        console.log(`🔄 Reconnection attempt ${state.connectionAttempts + 1}/${maxReconnectAttempts}`);
+        this.clearReconnectInterval();
+        this.connect();
+      }, reconnectDelay);
+    },
+
+    clearReconnectInterval() {
+      if (reconnectInterval) {
+        clearTimeout(reconnectInterval);
+        reconnectInterval = null;
+      }
+    },
+
+    // Message handling
+    handleMessage(message) {
+      console.log('📨 MCP message received:', message.type);
+
+      switch (message.type) {
+        case 'connection':
+          this.updateState({
+            serverInfo: message.serverInfo,
+            status: 'connected'
+          });
+          break;
+
+        case 'test_started':
+          this.updateState(state => ({
+            ...state,
+            runningTests: new Map(state.runningTests).set(message.executionId, {
+              status: 'running',
+              startedAt: message.timestamp
+            })
+          }));
+          break;
+
+        case 'test_log':
+          this.updateState(state => {
+            const logs = state.testLogs.get(message.executionId) || [];
+            logs.push(message.log);
+            const newTestLogs = new Map(state.testLogs);
+            newTestLogs.set(message.executionId, logs);
+            return { ...state, testLogs: newTestLogs };
+          });
+          break;
+
+        case 'test_completed':
+          this.updateState(state => {
+            const newRunningTests = new Map(state.runningTests);
+            newRunningTests.delete(message.executionId);
+            return { ...state, runningTests: newRunningTests };
+          });
+
+          // Emit custom event for test completion
+          window.dispatchEvent(new CustomEvent('mcpTestCompleted', {
+            detail: {
+              executionId: message.executionId,
+              results: message.results,
+              status: message.status
+            }
+          }));
+          break;
+
+        case 'error':
+          console.error('❌ MCP Server error:', message.error, message.details);
+          this.updateState({
+            lastError: `${message.error}: ${message.details}`
+          });
+          break;
+
+        case 'pong':
+          // Handle ping response
+          break;
+
+        default:
+          console.warn('⚠️ Unknown MCP message type:', message.type);
+      }
+    },
+
+    // Test execution methods
+    async runTest(testCode, config = {}) {
+      const currentState = this.getCurrentState();
+
+      if (currentState.status !== 'connected') {
+        throw new Error('Not connected to MCP server');
+      }
+
+      const testId = Date.now().toString();
+      const message = {
+        type: 'run_test',
+        testId,
+        testCode,
+        config
       };
-      
-      window.addEventListener('mcp-browser-event', handleResponse);
-      
-      this.sendMessage({
-        type: 'browser_action',
-        action: 'screenshot',
-        requestId
+
+      console.log('🚀 Sending test execution request:', testId);
+      currentState.ws.send(JSON.stringify(message));
+
+      // Return a promise that resolves when the test completes
+      return new Promise((resolve, reject) => {
+        const handleCompletion = (event) => {
+          if (event.detail.executionId === testId) {
+            window.removeEventListener('mcpTestCompleted', handleCompletion);
+            resolve(event.detail);
+          }
+        };
+
+        window.addEventListener('mcpTestCompleted', handleCompletion);
+
+        // Timeout after 5 minutes
+        setTimeout(() => {
+          window.removeEventListener('mcpTestCompleted', handleCompletion);
+          reject(new Error('Test execution timeout'));
+        }, 300000);
       });
-      
-      setTimeout(() => {
-        window.removeEventListener('mcp-browser-event', handleResponse);
-        reject(new Error('Screenshot timeout'));
-      }, 10000);
-    });
-  }
+    },
 
-  getConnectionAttempts() {
-    return this.getCurrentState().connectionAttempts;
-  }
+    async stopTest(executionId) {
+      const currentState = this.getCurrentState();
 
-  updateState(updates) {
-    this.state.update(state => ({
-      ...state,
-      ...updates
-    }));
-  }
+      if (currentState.status !== 'connected') {
+        throw new Error('Not connected to MCP server');
+      }
 
-  // Get current state synchronously
-  getCurrentState() {
-    let currentState;
-    this.state.subscribe(state => {
-      currentState = state;
-    })();
-    return currentState;
-  }
+      const message = {
+        type: 'stop_test',
+        executionId
+      };
+
+      currentState.ws.send(JSON.stringify(message));
+    },
+
+    async getTestStatus(executionId) {
+      const currentState = this.getCurrentState();
+
+      if (currentState.status !== 'connected') {
+        throw new Error('Not connected to MCP server');
+      }
+
+      const message = {
+        type: 'get_test_status',
+        executionId
+      };
+
+      currentState.ws.send(JSON.stringify(message));
+    },
+
+    async listBrowsers() {
+      const currentState = this.getCurrentState();
+
+      if (currentState.status !== 'connected') {
+        throw new Error('Not connected to MCP server');
+      }
+
+      const message = {
+        type: 'list_browsers'
+      };
+
+      currentState.ws.send(JSON.stringify(message));
+    },
+
+    // Utility methods
+    ping() {
+      const currentState = this.getCurrentState();
+      if (currentState.status === 'connected' && currentState.ws) {
+        currentState.ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+      }
+    },
+
+    getRunningTests() {
+      const currentState = this.getCurrentState();
+      return Array.from(currentState.runningTests.entries());
+    },
+
+    getTestLogs(executionId) {
+      const currentState = this.getCurrentState();
+      return currentState.testLogs.get(executionId) || [];
+    }
+  };
+
+  return store;
 }
 
-export const mcpStore = new MCPStore();
+export const mcpStore = createMCPStore();
