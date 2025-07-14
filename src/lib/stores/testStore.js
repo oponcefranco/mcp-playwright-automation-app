@@ -182,9 +182,24 @@ class TestStore {
 
     // Results Management
     addResult(result) {
+        const newResult = {
+            id: result.id || Date.now().toString() + Math.random().toString(36).substr(2, 9),
+            timestamp: result.timestamp || new Date().toISOString(),
+            ...result
+        };
+
         this.state.update(state => ({
             ...state,
-            results: [result, ...state.results]
+            results: [newResult, ...state.results]
+        }));
+
+        this.saveToStorage();
+    }
+
+    removeResult(resultId) {
+        this.state.update(state => ({
+            ...state,
+            results: state.results.filter(result => result.id !== resultId)
         }));
 
         this.saveToStorage();

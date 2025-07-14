@@ -4,36 +4,52 @@
     import { testStore } from "../stores/testStore.js";
     import { mcpStore } from "../stores/mcpStore.js";
 
-    console.log("▶️ TestRunner component loaded");
+    console.log("🎬 TestRunner component loaded");
 
     let tests = [];
+    let results = [];
     let selectedTests = new Set();
-    let isRunning = false;
-    let runningTestId = null;
-    let executionLogs = [];
-    let testResults = {};
     let runConfig = {
         browser: "chromium",
         headless: true,
         parallel: false,
         timeout: 30000,
+        retries: 1,
     };
+    let isRunning = false;
+    let currentExecution = null;
+    let executionLogs = [];
+    let mcpStatus = "disconnected";
 
-    // Subscribe to test store
+    // Subscribe to stores
     onMount(() => {
-        const unsubscribe = testStore.subscribe((state) => {
-            tests = state.tests;
-            testResults = state.results.reduce((acc, result) => {
-                acc[result.testId] = result;
-                return acc;
-            }, {});
+        const testUnsubscribe = testStore.subscribe((state) => {
+            tests = state.tests || [];
+            results = state.results || [];
         });
 
-        return unsubscribe;
+        const mcpUnsubscribe = mcpStore.subscribe((state) => {
+            mcpStatus = state.status;
+        });
+
+        // Auto-connect to MCP server
+        if (mcpStatus === "disconnected") {
+            mcpStore.connect();
+        }
+
+        return () => {
+            testUnsubscribe();
+            mcpUnsubscribe();
+        };
     });
 
-    $: selectedCount = selectedTests.size;
-    $: canRun = selectedCount > 0 && !isRunning;
+    function selectAllTests() {
+        selectedTests = new Set(tests.map((t) => t.id));
+    }
+
+    function deselectAllTests() {
+        selectedTests = new Set();
+    }
 
     function toggleTestSelection(testId) {
         if (selectedTests.has(testId)) {
@@ -44,206 +60,318 @@
         selectedTests = new Set(selectedTests); // Trigger reactivity
     }
 
-    function selectAllTests() {
-        selectedTests = new Set(tests.map((t) => t.id));
-    }
-
-    function clearSelection() {
-        selectedTests = new Set();
-    }
-
     async function runSelectedTests() {
-        if (!canRun) return;
+        if (selectedTests.size === 0) {
+            alert("Please select at least one test to run");
+            return;
+        }
+
+        if (mcpStatus !== "connected") {
+            alert("MCP Server is not connected. Please check the connection.");
+            return;
+        }
 
         isRunning = true;
         executionLogs = [];
-        const selectedTestList = tests.filter((t) => selectedTests.has(t.id));
-
-        addLog(
-            `🚀 Starting test execution for ${selectedTestList.length} test(s)`,
-        );
-        addLog(
-            `📋 Configuration: ${runConfig.browser} | Headless: ${runConfig.headless}`,
-        );
+        currentExecution = {
+            startTime: Date.now(),
+            totalTests: selectedTests.size,
+            completedTests: 0,
+            passedTests: 0,
+            failedTests: 0,
+        };
 
         try {
-            for (const test of selectedTestList) {
-                await runSingleTest(test);
+            console.log("🚀 Starting test execution via MCP...");
 
-                // Add delay between tests if not running in parallel
-                if (!runConfig.parallel && selectedTestList.length > 1) {
-                    await new Promise((resolve) => setTimeout(resolve, 1000));
+            for (const testId of selectedTests) {
+                const test = tests.find((t) => t.id === testId);
+                if (!test) continue;
+
+                addLog(`🚀 Running test: ${test.name}`);
+
+                try {
+                    // Debug log the test content
+                    console.log('🔍 Test content to run:', test.content);
+                    console.log('🔍 Test object:', test);
+                    
+                    if (!test.content) {
+                        throw new Error('Test content is missing or empty');
+                    }
+                    
+                    // Run test via MCP server
+                    const result = await mcpStore.runTest(test.content, runConfig);
+                    console.log('🔍 Test result received in TestRunner:', result);
+
+                    // Add result to store with enhanced error details
+                    const detailedResults = result.detailedResults || {};
+                    console.log('🔍 Detailed results:', detailedResults);
+                    testStore.addResult({
+                        testId: test.id,
+                        testName: test.name,
+                        status:
+                            result.status === "passed" ? "passed" : "failed",
+                        duration: result.duration || detailedResults.duration || 0,
+                        error: result.error || detailedResults.error,
+                        logs: result.logs || [],
+                        executionId: result.executionId,
+                        timestamp: new Date().toISOString(),
+                        // Enhanced error information
+                        detailedError: {
+                            stdout: detailedResults.stdout || '',
+                            stderr: detailedResults.stderr || '',
+                            summary: detailedResults.summary || {},
+                            individualTests: detailedResults.tests || [],
+                            exitCode: result.exitCode || 0
+                        }
+                    });
+
+                    if (result.status === "passed") {
+                        currentExecution.passedTests++;
+                        addLog(`✅ Test passed: ${test.name}`);
+                    } else {
+                        currentExecution.failedTests++;
+                        const failureDetails = detailedResults.summary || {};
+                        const failedCount = failureDetails.failed || 0;
+                        const totalCount = failureDetails.total || 0;
+                        
+                        if (totalCount > 1) {
+                            addLog(
+                                `❌ Test failed: ${test.name} - ${failedCount}/${totalCount} tests failed`
+                            );
+                        } else {
+                            addLog(
+                                `❌ Test failed: ${test.name} - ${result.error || "Unknown error"}`
+                            );
+                        }
+                        
+                        // Log stderr if available for immediate debugging
+                        if (detailedResults.stderr) {
+                            addLog(`💥 Error details: ${detailedResults.stderr.substring(0, 200)}${detailedResults.stderr.length > 200 ? '...' : ''}`);
+                        }
+                    }
+                } catch (error) {
+                    console.error("❌ Test execution error:", error);
+                    addLog(`💥 Test error: ${test.name} - ${error.message}`);
+
+                    testStore.addResult({
+                        testId: test.id,
+                        testName: test.name,
+                        status: "error",
+                        duration: 0,
+                        error: error.message,
+                        logs: [error.message],
+                        timestamp: new Date().toISOString(),
+                    });
+
+                    currentExecution.failedTests++;
                 }
+
+                currentExecution.completedTests++;
             }
 
-            addLog(`✅ Test execution completed successfully`);
+            const duration = Date.now() - currentExecution.startTime;
+            addLog(
+                `🏁 Test execution completed in ${(duration / 1000).toFixed(1)}s`,
+            );
+            addLog(
+                `📊 Results: ${currentExecution.passedTests} passed, ${currentExecution.failedTests} failed`,
+            );
         } catch (error) {
-            addLog(`❌ Test execution failed: ${error.message}`);
-            console.error("Test execution error:", error);
+            console.error("❌ Test runner error:", error);
+            addLog(`💥 Execution failed: ${error.message}`);
         } finally {
             isRunning = false;
-            runningTestId = null;
+            currentExecution = null;
         }
     }
 
-    async function runSingleTest(test) {
-        runningTestId = test.id;
-        addLog(`\n▶️ Running: ${test.name}`);
+    async function runTestsLocally() {
+        if (selectedTests.size === 0) {
+            alert("Please select at least one test to run");
+            return;
+        }
+
+        isRunning = true;
+        executionLogs = [];
 
         try {
-            // Simulate test execution via MCP
-            const startTime = Date.now();
+            addLog("🔧 Running tests locally (simulation mode)...");
 
-            // In a real implementation, this would call the MCP server
-            const result = await simulateTestExecution(test);
+            for (const testId of selectedTests) {
+                const test = tests.find((t) => t.id === testId);
+                if (!test) continue;
 
-            const duration = Date.now() - startTime;
+                addLog(`🚀 Simulating test: ${test.name}`);
 
-            // Store result
-            testStore.addResult({
-                testId: test.id,
-                testName: test.name,
-                status: result.status,
-                duration,
-                error: result.error,
-                screenshots: result.screenshots || [],
-                logs: result.logs || [],
-                timestamp: new Date().toISOString(),
-            });
+                // Simulate test execution
+                await new Promise((resolve) =>
+                    setTimeout(resolve, 1000 + Math.random() * 2000),
+                );
 
-            if (result.status === "passed") {
-                addLog(`✅ ${test.name} - PASSED (${duration}ms)`);
-            } else {
+                const success = Math.random() > 0.3; // 70% success rate
+                const duration = Math.floor(Math.random() * 3000) + 500;
+
+                testStore.addResult({
+                    testId: test.id,
+                    testName: test.name,
+                    status: success ? "passed" : "failed",
+                    duration,
+                    error: success ? null : "Simulated test failure",
+                    logs: [
+                        "Browser launched",
+                        "Page loaded",
+                        success
+                            ? "Test completed successfully"
+                            : "Test assertion failed",
+                    ],
+                    timestamp: new Date().toISOString(),
+                });
+
                 addLog(
-                    `❌ ${test.name} - FAILED (${duration}ms): ${result.error}`,
+                    success
+                        ? `✅ Test passed: ${test.name}`
+                        : `❌ Test failed: ${test.name}`,
                 );
             }
+
+            addLog("🏁 Local test execution completed");
         } catch (error) {
-            addLog(`💥 ${test.name} - ERROR: ${error.message}`);
-
-            testStore.addResult({
-                testId: test.id,
-                testName: test.name,
-                status: "error",
-                duration: 0,
-                error: error.message,
-                timestamp: new Date().toISOString(),
-            });
-        }
-    }
-
-    // Simulate test execution for demo purposes
-    async function simulateTestExecution(test) {
-        // Simulate network delay
-        await new Promise((resolve) =>
-            setTimeout(resolve, Math.random() * 2000 + 1000),
-        );
-
-        // Random success/failure for demo
-        const success = Math.random() > 0.3; // 70% success rate
-
-        if (success) {
-            return {
-                status: "passed",
-                logs: [
-                    "Browser launched",
-                    "Page navigated successfully",
-                    "Elements found and interacted with",
-                    "Assertions passed",
-                ],
-            };
-        } else {
-            return {
-                status: "failed",
-                error: "Element not found: login button",
-                logs: [
-                    "Browser launched",
-                    "Page navigated successfully",
-                    "Failed to find element: login button",
-                ],
-            };
+            console.error("❌ Local test runner error:", error);
+            addLog(`💥 Execution failed: ${error.message}`);
+        } finally {
+            isRunning = false;
         }
     }
 
     function addLog(message) {
-        executionLogs = [
-            ...executionLogs,
-            {
-                timestamp: new Date().toLocaleTimeString(),
-                message,
-            },
-        ];
+        const timestamp = new Date().toLocaleTimeString();
+        executionLogs = [...executionLogs, { timestamp, message }];
     }
 
-    function deleteTest(testId) {
-        if (confirm("Are you sure you want to delete this test?")) {
-            testStore.removeTest(testId);
-            selectedTests.delete(testId);
-            selectedTests = new Set(selectedTests);
+    function stopExecution() {
+        if (currentExecution) {
+            addLog("🛑 Stopping test execution...");
+            isRunning = false;
+            currentExecution = null;
         }
     }
 
-    function editTest(test) {
-        // For now, just show the test content
-        alert(
-            `Edit functionality will be added in future versions.\n\nTest: ${test.name}\nCategory: ${test.category}`,
-        );
+    function clearLogs() {
+        executionLogs = [];
     }
 
-    function getTestStatusIcon(testId) {
-        const result = testResults[testId];
-        if (!result) return "⚪";
-
-        switch (result.status) {
-            case "passed":
-                return "✅";
-            case "failed":
-                return "❌";
+    function getStatusColor(status) {
+        switch (status) {
+            case "connected":
+                return "#10b981";
+            case "connecting":
+                return "#f59e0b";
+            case "disconnected":
+                return "#6b7280";
             case "error":
-                return "💥";
-            case "running":
-                return "🔄";
+                return "#dc2626";
             default:
-                return "⚪";
+                return "#9ca3af";
         }
-    }
-
-    function getTestStatusText(testId) {
-        const result = testResults[testId];
-        if (!result) return "Not run";
-
-        const timeAgo = new Date(result.timestamp).toLocaleString();
-        return `${result.status.toUpperCase()} - ${timeAgo}`;
-    }
-
-    function formatDuration(duration) {
-        if (duration < 1000) return `${duration}ms`;
-        return `${(duration / 1000).toFixed(1)}s`;
     }
 </script>
 
 <div class="test-runner">
-    <!-- Left Panel - Test List & Config -->
+    <!-- Left Panel - Test Selection and Controls -->
     <div class="left-panel">
         <div class="panel-content">
             <!-- Header -->
             <div class="section-header">
-                <h2 class="section-title">▶️ Test Runner</h2>
-                <div class="test-stats">
-                    {tests.length} tests • {selectedCount} selected
+                <h2 class="section-title">🎬 Test Runner</h2>
+                <div class="mcp-status">
+                    <span
+                        class="status-indicator"
+                        style="color: {getStatusColor(mcpStatus)}">●</span
+                    >
+                    <span class="status-text">MCP Server {mcpStatus}</span>
+                    {#if mcpStatus === "disconnected"}
+                        <button
+                            on:click={() => mcpStore.connect()}
+                            class="btn btn-tiny btn-primary"
+                        >
+                            Connect
+                        </button>
+                    {/if}
+                </div>
+            </div>
+
+            <!-- Test Selection -->
+            <div class="test-selection-section">
+                <div class="selection-header">
+                    <h3 class="selection-title">Select Tests to Run</h3>
+                    <div class="selection-actions">
+                        <button
+                            on:click={selectAllTests}
+                            class="btn btn-small btn-secondary"
+                        >
+                            Select All
+                        </button>
+                        <button
+                            on:click={deselectAllTests}
+                            class="btn btn-small btn-secondary"
+                        >
+                            Clear All
+                        </button>
+                    </div>
+                </div>
+
+                <div class="tests-list">
+                    {#if tests.length === 0}
+                        <div class="empty-state">
+                            <div class="empty-icon">🧪</div>
+                            <div class="empty-text">No tests available</div>
+                            <div class="empty-subtext">
+                                Create some tests in the Test Builder first
+                            </div>
+                        </div>
+                    {:else}
+                        {#each tests as test (test.id)}
+                            <div
+                                class="test-item"
+                                class:selected={selectedTests.has(test.id)}
+                            >
+                                <label class="test-checkbox">
+                                    <input
+                                        type="checkbox"
+                                        checked={selectedTests.has(test.id)}
+                                        on:change={() =>
+                                            toggleTestSelection(test.id)}
+                                    />
+                                    <span class="test-info">
+                                        <div class="test-name">{test.name}</div>
+                                        <div class="test-description">
+                                            {test.description ||
+                                                "No description"}
+                                        </div>
+                                    </span>
+                                </label>
+                            </div>
+                        {/each}
+                    {/if}
+                </div>
+
+                <div class="selection-summary">
+                    Selected: {selectedTests.size} of {tests.length} tests
                 </div>
             </div>
 
             <!-- Run Configuration -->
             <div class="config-section">
-                <h3 class="config-title">Run Configuration</h3>
+                <h3 class="config-title">🛠️ Run Configuration</h3>
 
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label class="form-label">Browser</label>
+                <div class="config-grid">
+                    <div class="config-item">
+                        <label class="config-label" for="browser-select">Browser</label>
                         <select
+                            id="browser-select"
                             bind:value={runConfig.browser}
-                            class="form-select"
+                            class="config-select"
                         >
                             <option value="chromium">Chromium</option>
                             <option value="firefox">Firefox</option>
@@ -251,153 +379,112 @@
                         </select>
                     </div>
 
-                    <div class="form-group">
-                        <label class="form-label">Timeout (ms)</label>
+                    <div class="config-item">
+                        <label class="config-label" for="timeout-input">Timeout (ms)</label>
                         <input
+                            id="timeout-input"
                             type="number"
                             bind:value={runConfig.timeout}
                             min="5000"
-                            max="120000"
+                            max="300000"
                             step="5000"
-                            class="form-input"
+                            class="config-input"
                         />
                     </div>
 
-                    <div class="form-group">
-                        <label class="toggle-label">
-                            <input
-                                type="checkbox"
-                                bind:checked={runConfig.headless}
-                                class="toggle-input"
-                            />
-                            <span class="toggle-text">Headless Mode</span>
-                        </label>
+                    <div class="config-item">
+                        <label class="config-label" for="retries-input">Retries</label>
+                        <input
+                            id="retries-input"
+                            type="number"
+                            bind:value={runConfig.retries}
+                            min="0"
+                            max="5"
+                            class="config-input"
+                        />
                     </div>
+                </div>
 
-                    <div class="form-group">
-                        <label class="toggle-label">
-                            <input
-                                type="checkbox"
-                                bind:checked={runConfig.parallel}
-                                class="toggle-input"
-                            />
-                            <span class="toggle-text">Parallel Execution</span>
-                        </label>
-                    </div>
+                <div class="config-checkboxes">
+                    <label class="config-checkbox">
+                        <input
+                            type="checkbox"
+                            bind:checked={runConfig.headless}
+                        />
+                        <span>Headless Mode</span>
+                    </label>
+                    <label class="config-checkbox">
+                        <input
+                            type="checkbox"
+                            bind:checked={runConfig.parallel}
+                        />
+                        <span>Parallel Execution</span>
+                    </label>
                 </div>
             </div>
 
-            <!-- Test Selection Controls -->
-            <div class="selection-controls">
-                <button
-                    on:click={selectAllTests}
-                    class="btn btn-small btn-secondary"
-                >
-                    Select All
-                </button>
-                <button
-                    on:click={clearSelection}
-                    class="btn btn-small btn-secondary"
-                >
-                    Clear
-                </button>
-                <button
-                    on:click={runSelectedTests}
-                    disabled={!canRun}
-                    class="btn btn-small btn-primary"
-                >
-                    {#if isRunning}
-                        🔄 Running...
-                    {:else}
-                        ▶️ Run Selected ({selectedCount})
-                    {/if}
-                </button>
-            </div>
-
-            <!-- Test List -->
-            <div class="test-list">
-                {#if tests.length === 0}
-                    <div class="empty-state">
-                        <div class="empty-icon">📝</div>
-                        <div class="empty-text">No tests available</div>
-                        <div class="empty-subtext">
-                            Create tests in the Test Builder tab
-                        </div>
-                    </div>
+            <!-- Run Controls -->
+            <div class="run-controls">
+                {#if !isRunning}
+                    <button
+                        on:click={runSelectedTests}
+                        class="btn btn-primary btn-large"
+                        disabled={selectedTests.size === 0 ||
+                            mcpStatus !== "connected"}
+                    >
+                        🚀 Run via MCP Server
+                    </button>
+                    <button
+                        on:click={runTestsLocally}
+                        class="btn btn-secondary btn-large"
+                        disabled={selectedTests.size === 0}
+                    >
+                        🔧 Run Locally (Simulate)
+                    </button>
                 {:else}
-                    {#each tests as test (test.id)}
-                        <div
-                            class="test-item {runningTestId === test.id
-                                ? 'running'
-                                : ''}"
-                        >
-                            <div class="test-checkbox">
-                                <input
-                                    type="checkbox"
-                                    checked={selectedTests.has(test.id)}
-                                    on:change={() =>
-                                        toggleTestSelection(test.id)}
-                                    disabled={isRunning}
-                                />
-                            </div>
-
-                            <div class="test-content">
-                                <div class="test-header">
-                                    <span class="test-status"
-                                        >{getTestStatusIcon(test.id)}</span
-                                    >
-                                    <span class="test-name">{test.name}</span>
-                                    <span class="test-category"
-                                        >{test.category}</span
-                                    >
-                                </div>
-
-                                <div class="test-meta">
-                                    <span class="test-status-text"
-                                        >{getTestStatusText(test.id)}</span
-                                    >
-                                    {#if testResults[test.id]?.duration}
-                                        <span class="test-duration"
-                                            >⏱️ {formatDuration(
-                                                testResults[test.id].duration,
-                                            )}</span
-                                        >
-                                    {/if}
-                                </div>
-
-                                {#if test.config?.baseUrl}
-                                    <div class="test-url">
-                                        🌐 {test.config.baseUrl}
-                                    </div>
-                                {/if}
-                            </div>
-
-                            <div class="test-actions">
-                                <button
-                                    on:click={() => runSingleTest(test)}
-                                    disabled={isRunning}
-                                    class="btn btn-tiny"
-                                >
-                                    ▶️
-                                </button>
-                                <button
-                                    on:click={() => editTest(test)}
-                                    class="btn btn-tiny"
-                                >
-                                    ✏️
-                                </button>
-                                <button
-                                    on:click={() => deleteTest(test.id)}
-                                    disabled={isRunning}
-                                    class="btn btn-tiny btn-danger"
-                                >
-                                    🗑️
-                                </button>
-                            </div>
-                        </div>
-                    {/each}
+                    <button
+                        on:click={stopExecution}
+                        class="btn btn-danger btn-large"
+                    >
+                        🛑 Stop Execution
+                    </button>
                 {/if}
             </div>
+
+            <!-- Execution Progress -->
+            {#if currentExecution}
+                <div class="progress-section">
+                    <h3 class="progress-title">Execution Progress</h3>
+                    <div class="progress-stats">
+                        <div class="progress-stat">
+                            <span class="stat-label">Progress:</span>
+                            <span class="stat-value"
+                                >{currentExecution.completedTests}/{currentExecution.totalTests}</span
+                            >
+                        </div>
+                        <div class="progress-stat">
+                            <span class="stat-label">Passed:</span>
+                            <span class="stat-value success"
+                                >{currentExecution.passedTests}</span
+                            >
+                        </div>
+                        <div class="progress-stat">
+                            <span class="stat-label">Failed:</span>
+                            <span class="stat-value error"
+                                >{currentExecution.failedTests}</span
+                            >
+                        </div>
+                    </div>
+                    <div class="progress-bar">
+                        <div
+                            class="progress-fill"
+                            style="width: {(currentExecution.completedTests /
+                                currentExecution.totalTests) *
+                                100}%"
+                        ></div>
+                    </div>
+                </div>
+            {/if}
         </div>
     </div>
 
@@ -405,27 +492,29 @@
     <div class="right-panel">
         <div class="panel-content">
             <div class="logs-header">
-                <h3 class="logs-title">Execution Logs</h3>
-                <button
-                    on:click={() => (executionLogs = [])}
-                    class="btn btn-small btn-secondary"
-                >
-                    🗑️ Clear Logs
-                </button>
+                <h3 class="logs-title">📋 Execution Logs</h3>
+                <div class="logs-actions">
+                    <button
+                        on:click={clearLogs}
+                        class="btn btn-small btn-secondary"
+                    >
+                        🗑️ Clear
+                    </button>
+                </div>
             </div>
 
             <div class="logs-container">
                 {#if executionLogs.length === 0}
                     <div class="logs-empty">
-                        <div class="empty-icon">📄</div>
-                        <div class="empty-text">No execution logs</div>
-                        <div class="empty-subtext">
-                            Run tests to see execution details
+                        <div class="logs-empty-icon">📋</div>
+                        <div class="logs-empty-text">No logs yet</div>
+                        <div class="logs-empty-subtext">
+                            Run some tests to see execution logs here
                         </div>
                     </div>
                 {:else}
-                    <div class="logs-content">
-                        {#each executionLogs as log}
+                    <div class="logs-list">
+                        {#each executionLogs as log (log.timestamp + log.message)}
                             <div class="log-entry">
                                 <span class="log-timestamp"
                                     >{log.timestamp}</span
@@ -448,16 +537,17 @@
 
     .left-panel,
     .right-panel {
-        flex: 1;
         overflow-y: auto;
     }
 
     .left-panel {
+        flex: 2;
         border-right: 1px solid #e5e7eb;
         background-color: white;
     }
 
     .right-panel {
+        flex: 1;
         background-color: #f9fafb;
     }
 
@@ -479,11 +569,97 @@
         margin: 0;
     }
 
-    .test-stats {
+    .mcp-status {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.875rem;
+    }
+
+    .status-indicator {
+        font-size: 1rem;
+    }
+
+    .status-text {
+        color: #6b7280;
+    }
+
+    .test-selection-section {
+        background-color: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .selection-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+    }
+
+    .selection-title {
+        font-size: 1rem;
+        font-weight: 500;
+        color: #111827;
+        margin: 0;
+    }
+
+    .selection-actions {
+        display: flex;
+        gap: 0.5rem;
+    }
+
+    .tests-list {
+        max-height: 300px;
+        overflow-y: auto;
+        margin-bottom: 1rem;
+    }
+
+    .test-item {
+        border: 1px solid #e5e7eb;
+        border-radius: 0.375rem;
+        margin-bottom: 0.5rem;
+        background-color: white;
+        transition: all 0.2s;
+    }
+
+    .test-item.selected {
+        border-color: #3b82f6;
+        background-color: #eff6ff;
+    }
+
+    .test-checkbox {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.75rem;
+        cursor: pointer;
+        width: 100%;
+    }
+
+    .test-info {
+        flex: 1;
+    }
+
+    .test-name {
+        font-weight: 500;
+        color: #111827;
+        margin-bottom: 0.25rem;
+    }
+
+    .test-description {
         font-size: 0.875rem;
         color: #6b7280;
+    }
+
+    .selection-summary {
+        font-size: 0.875rem;
+        color: #6b7280;
+        text-align: center;
+        padding: 0.5rem;
         background-color: #f3f4f6;
-        padding: 0.5rem 1rem;
         border-radius: 0.375rem;
     }
 
@@ -496,58 +672,62 @@
     }
 
     .config-title {
-        font-size: 1.125rem;
+        font-size: 1rem;
         font-weight: 500;
         color: #111827;
         margin: 0 0 1rem 0;
     }
 
-    .form-grid {
+    .config-grid {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: 1fr 1fr 1fr;
         gap: 1rem;
+        margin-bottom: 1rem;
     }
 
-    .form-group {
+    .config-item {
         display: flex;
         flex-direction: column;
     }
 
-    .form-label {
+    .config-label {
         font-size: 0.875rem;
         font-weight: 500;
         color: #374151;
         margin-bottom: 0.25rem;
     }
 
-    .form-input,
-    .form-select {
-        padding: 0.5rem 0.75rem;
+    .config-select,
+    .config-input {
+        padding: 0.375rem 0.75rem;
         border: 1px solid #d1d5db;
         border-radius: 0.375rem;
         font-size: 0.875rem;
+        background-color: white;
     }
 
-    .toggle-label {
+    .config-checkboxes {
+        display: flex;
+        gap: 1rem;
+    }
+
+    .config-checkbox {
         display: flex;
         align-items: center;
         gap: 0.5rem;
-        margin-top: 0.5rem;
-    }
-
-    .toggle-text {
+        cursor: pointer;
         font-size: 0.875rem;
-        color: #6b7280;
+        color: #374151;
     }
 
-    .selection-controls {
+    .run-controls {
         display: flex;
-        gap: 0.5rem;
-        margin-bottom: 1rem;
+        gap: 1rem;
+        margin-bottom: 1.5rem;
     }
 
     .btn {
-        padding: 0.5rem 1rem;
+        padding: 0.75rem 1.5rem;
         border: none;
         border-radius: 0.375rem;
         font-size: 0.875rem;
@@ -559,6 +739,22 @@
     .btn:disabled {
         opacity: 0.5;
         cursor: not-allowed;
+    }
+
+    .btn-small {
+        padding: 0.375rem 0.75rem;
+        font-size: 0.75rem;
+    }
+
+    .btn-tiny {
+        padding: 0.25rem 0.5rem;
+        font-size: 0.75rem;
+    }
+
+    .btn-large {
+        padding: 1rem 2rem;
+        font-size: 1rem;
+        flex: 1;
     }
 
     .btn-primary {
@@ -575,18 +771,8 @@
         color: white;
     }
 
-    .btn-secondary:hover:not(:disabled) {
+    .btn-secondary:hover {
         background-color: #4b5563;
-    }
-
-    .btn-small {
-        padding: 0.375rem 0.75rem;
-        font-size: 0.75rem;
-    }
-
-    .btn-tiny {
-        padding: 0.25rem 0.5rem;
-        font-size: 0.75rem;
     }
 
     .btn-danger {
@@ -594,174 +780,67 @@
         color: white;
     }
 
-    .btn-danger:hover:not(:disabled) {
+    .btn-danger:hover {
         background-color: #b91c1c;
     }
 
-    .test-list {
-        max-height: 400px;
-        overflow-y: auto;
-    }
-
-    .test-item {
-        display: flex;
-        align-items: flex-start;
-        gap: 0.75rem;
-        padding: 1rem;
-        border: 1px solid #e5e7eb;
+    .progress-section {
+        background-color: #eff6ff;
+        border: 1px solid #bfdbfe;
         border-radius: 0.5rem;
-        margin-bottom: 0.75rem;
-        background-color: white;
-        transition: all 0.2s;
+        padding: 1rem;
     }
 
-    .test-item:hover {
-        border-color: #3b82f6;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-    }
-
-    .test-item.running {
-        border-color: #f59e0b;
-        background-color: #fef3c7;
-    }
-
-    .test-checkbox {
-        margin-top: 0.25rem;
-    }
-
-    .test-content {
-        flex: 1;
-    }
-
-    .test-header {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        margin-bottom: 0.5rem;
-    }
-
-    .test-status {
+    .progress-title {
         font-size: 1rem;
-    }
-
-    .test-name {
         font-weight: 500;
-        color: #111827;
+        color: #1e40af;
+        margin: 0 0 1rem 0;
     }
 
-    .test-category {
-        background-color: #e5e7eb;
-        color: #6b7280;
-        padding: 0.125rem 0.5rem;
-        border-radius: 0.25rem;
-        font-size: 0.75rem;
-        text-transform: uppercase;
-    }
-
-    .test-meta {
+    .progress-stats {
         display: flex;
+        justify-content: space-between;
+        margin-bottom: 1rem;
+    }
+
+    .progress-stat {
+        display: flex;
+        flex-direction: column;
         align-items: center;
-        gap: 1rem;
+    }
+
+    .stat-label {
+        font-size: 0.75rem;
+        color: #6b7280;
         margin-bottom: 0.25rem;
     }
 
-    .test-status-text {
-        font-size: 0.75rem;
-        color: #6b7280;
+    .stat-value {
+        font-size: 1.25rem;
+        font-weight: bold;
+        color: #1e40af;
     }
 
-    .test-duration {
-        font-size: 0.75rem;
-        color: #059669;
+    .stat-value.success {
+        color: #10b981;
     }
 
-    .test-url {
-        font-size: 0.75rem;
-        color: #6b7280;
-        font-family: monospace;
+    .stat-value.error {
+        color: #dc2626;
     }
 
-    .test-actions {
-        display: flex;
-        flex-direction: column;
-        gap: 0.25rem;
-    }
-
-    .logs-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 1rem;
-    }
-
-    .logs-title {
-        font-size: 1.125rem;
-        font-weight: 500;
-        color: #111827;
-        margin: 0;
-    }
-
-    .logs-container {
-        background-color: white;
-        border: 1px solid #e5e7eb;
-        border-radius: 0.5rem;
-        height: 500px;
+    .progress-bar {
+        height: 8px;
+        background-color: #e5e7eb;
+        border-radius: 4px;
         overflow: hidden;
     }
 
-    .logs-empty {
+    .progress-fill {
         height: 100%;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        text-align: center;
-    }
-
-    .logs-empty .empty-icon {
-        font-size: 3rem;
-        margin-bottom: 1rem;
-    }
-
-    .logs-empty .empty-text {
-        font-size: 1.125rem;
-        font-weight: 500;
-        color: #111827;
-        margin-bottom: 0.5rem;
-    }
-
-    .logs-empty .empty-subtext {
-        color: #6b7280;
-        font-size: 0.875rem;
-    }
-
-    .logs-content {
-        padding: 1rem;
-        height: 100%;
-        overflow-y: auto;
-        font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono",
-            monospace;
-    }
-
-    .log-entry {
-        display: flex;
-        gap: 1rem;
-        margin-bottom: 0.5rem;
-        font-size: 0.875rem;
-        line-height: 1.5;
-    }
-
-    .log-timestamp {
-        color: #6b7280;
-        font-size: 0.75rem;
-        min-width: 80px;
-        flex-shrink: 0;
-    }
-
-    .log-message {
-        color: #111827;
-        flex: 1;
-        word-break: break-word;
+        background-color: #3b82f6;
+        transition: width 0.3s ease;
     }
 
     .empty-state {
@@ -770,18 +849,94 @@
         color: #6b7280;
     }
 
-    .empty-state .empty-icon {
+    .empty-icon {
+        font-size: 2rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .empty-text {
+        font-size: 1rem;
+        font-weight: 500;
+        margin-bottom: 0.25rem;
+    }
+
+    .empty-subtext {
+        font-size: 0.875rem;
+    }
+
+    /* Right Panel Styles */
+    .logs-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+    }
+
+    .logs-title {
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: #111827;
+        margin: 0;
+    }
+
+    .logs-container {
+        background-color: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 0.5rem;
+        height: calc(100vh - 200px);
+        overflow: hidden;
+    }
+
+    .logs-empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        color: #6b7280;
+    }
+
+    .logs-empty-icon {
         font-size: 3rem;
         margin-bottom: 1rem;
     }
 
-    .empty-state .empty-text {
+    .logs-empty-text {
         font-size: 1.125rem;
         font-weight: 500;
         margin-bottom: 0.5rem;
     }
 
-    .empty-state .empty-subtext {
+    .logs-empty-subtext {
         font-size: 0.875rem;
+    }
+
+    .logs-list {
+        height: 100%;
+        overflow-y: auto;
+        padding: 1rem;
+    }
+
+    .log-entry {
+        display: flex;
+        gap: 1rem;
+        padding: 0.5rem 0;
+        border-bottom: 1px solid #f3f4f6;
+        font-family: monospace;
+        font-size: 0.875rem;
+    }
+
+    .log-entry:last-child {
+        border-bottom: none;
+    }
+
+    .log-timestamp {
+        color: #6b7280;
+        min-width: 80px;
+    }
+
+    .log-message {
+        color: #111827;
+        flex: 1;
     }
 </style>

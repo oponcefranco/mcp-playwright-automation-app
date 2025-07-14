@@ -1,45 +1,85 @@
 <!-- lib/components/ResultsPanel.svelte -->
 <script>
-  import { onMount } from 'svelte';
-  import { testStore } from '../stores/testStore.js';
+  import { onMount } from "svelte";
+  import { testStore } from "../stores/testStore.js";
 
-  console.log('📊 ResultsPanel component loaded');
+  console.log("📊 ResultsPanel component loaded");
 
   let results = [];
   let tests = [];
   let filteredResults = [];
-  let selectedFilter = 'all';
-  let selectedTestId = 'all';
-  let sortBy = 'timestamp';
-  let sortOrder = 'desc';
+  let selectedFilter = "all";
+  let selectedTestId = "all";
+  let sortBy = "timestamp";
+  let sortOrder = "desc";
   let showDetails = new Set();
+
+  // Debug variables
+  let debugInfo = {
+    rawResults: 0,
+    filteredCount: 0,
+    testsCount: 0,
+  };
 
   // Subscribe to test store
   onMount(() => {
-    const unsubscribe = testStore.subscribe(state => {
+    console.log("📊 ResultsPanel mounting...");
+
+    const unsubscribe = testStore.subscribe((state) => {
+      console.log("📊 ResultsPanel received state update:", {
+        tests: state.tests?.length || 0,
+        results: state.results?.length || 0,
+      });
+
       results = state.results || [];
       tests = state.tests || [];
+
+      // Update debug info
+      debugInfo = {
+        rawResults: results.length,
+        testsCount: tests.length,
+        filteredCount: 0,
+      };
+
+      console.log("📊 Raw results:", results);
+      console.log("📊 Available tests:", tests);
+
       applyFilters();
     });
 
     return unsubscribe;
   });
 
+  // Apply filters reactively
   $: if (results || selectedFilter || selectedTestId || sortBy || sortOrder) {
     applyFilters();
   }
 
   function applyFilters() {
+    console.log("🔍 Applying filters...", {
+      totalResults: results.length,
+      selectedFilter,
+      selectedTestId,
+    });
+
     let filtered = [...results];
 
     // Filter by status
-    if (selectedFilter !== 'all') {
-      filtered = filtered.filter(result => result.status === selectedFilter);
+    if (selectedFilter !== "all") {
+      filtered = filtered.filter((result) => {
+        const status = result.status?.toLowerCase();
+        return status === selectedFilter.toLowerCase();
+      });
+      console.log(
+        `📊 After status filter (${selectedFilter}):`,
+        filtered.length,
+      );
     }
 
     // Filter by test
-    if (selectedTestId !== 'all') {
-      filtered = filtered.filter(result => result.testId === selectedTestId);
+    if (selectedTestId !== "all") {
+      filtered = filtered.filter((result) => result.testId === selectedTestId);
+      console.log(`📊 After test filter (${selectedTestId}):`, filtered.length);
     }
 
     // Sort results
@@ -48,18 +88,24 @@
       let bVal = b[sortBy];
 
       // Handle timestamp sorting
-      if (sortBy === 'timestamp') {
+      if (sortBy === "timestamp") {
         aVal = new Date(aVal).getTime();
         bVal = new Date(bVal).getTime();
       }
 
       // Handle duration sorting
-      if (sortBy === 'duration') {
+      if (sortBy === "duration") {
         aVal = aVal || 0;
         bVal = bVal || 0;
       }
 
-      if (sortOrder === 'asc') {
+      // Handle testName sorting
+      if (sortBy === "testName") {
+        aVal = getTestName(a.testId);
+        bVal = getTestName(b.testId);
+      }
+
+      if (sortOrder === "asc") {
         return aVal > bVal ? 1 : -1;
       } else {
         return aVal < bVal ? 1 : -1;
@@ -67,6 +113,9 @@
     });
 
     filteredResults = filtered;
+    debugInfo.filteredCount = filtered.length;
+
+    console.log("📊 Final filtered results:", filteredResults.length);
   }
 
   function toggleDetails(resultId) {
@@ -79,81 +128,154 @@
   }
 
   function getStatusIcon(status) {
-    switch (status) {
-      case 'passed': return '✅';
-      case 'failed': return '❌';
-      case 'error': return '💥';
-      case 'running': return '🔄';
-      case 'skipped': return '⏭️';
-      default: return '⚪';
+    switch (status?.toLowerCase()) {
+      case "passed":
+        return "✅";
+      case "failed":
+        return "❌";
+      case "error":
+        return "💥";
+      case "running":
+        return "🔄";
+      case "skipped":
+        return "⏭️";
+      default:
+        return "⚪";
     }
   }
 
   function getStatusColor(status) {
-    switch (status) {
-      case 'passed': return '#10b981';
-      case 'failed': return '#dc2626';
-      case 'error': return '#f59e0b';
-      case 'running': return '#3b82f6';
-      case 'skipped': return '#6b7280';
-      default: return '#9ca3af';
+    switch (status?.toLowerCase()) {
+      case "passed":
+        return "#10b981";
+      case "failed":
+        return "#dc2626";
+      case "error":
+        return "#f59e0b";
+      case "running":
+        return "#3b82f6";
+      case "skipped":
+        return "#6b7280";
+      default:
+        return "#9ca3af";
     }
   }
 
   function formatDuration(duration) {
-    if (!duration) return 'N/A';
+    if (!duration || duration === 0) return "N/A";
     if (duration < 1000) return `${duration}ms`;
     return `${(duration / 1000).toFixed(1)}s`;
   }
 
   function formatTimestamp(timestamp) {
-    return new Date(timestamp).toLocaleString();
+    if (!timestamp) return "Unknown";
+    try {
+      return new Date(timestamp).toLocaleString();
+    } catch (error) {
+      return "Invalid date";
+    }
   }
 
   function getTestName(testId) {
-    const test = tests.find(t => t.id === testId);
-    return test ? test.name : 'Unknown Test';
+    const test = tests.find((t) => t.id === testId);
+    return test ? test.name : testId || "Unknown Test";
+  }
+
+  function getResultKey(result, index) {
+    return result.id || `result-${index}-${result.testId || 'unknown'}-${result.timestamp || Date.now()}`;
   }
 
   function clearAllResults() {
-    if (confirm('Are you sure you want to clear all test results?')) {
+    if (confirm("Are you sure you want to clear all test results?")) {
       testStore.clearResults();
     }
   }
 
-  function deleteResult(resultId) {
-    if (confirm('Are you sure you want to delete this result?')) {
-      testStore.removeResult(resultId);
+  function deleteResult(resultKey) {
+    if (confirm("Are you sure you want to delete this result?")) {
+      // Find the actual result by key and use its actual ID if available
+      const resultIndex = filteredResults.findIndex((r, i) => getResultKey(r, i) === resultKey);
+      if (resultIndex >= 0) {
+        const result = filteredResults[resultIndex];
+        if (result.id) {
+          testStore.removeResult(result.id);
+        } else {
+          // If no ID, remove by finding the exact object in the results array
+          const allResultsIndex = results.findIndex(r => 
+            r.testId === result.testId && 
+            r.timestamp === result.timestamp && 
+            r.status === result.status
+          );
+          if (allResultsIndex >= 0) {
+            // Manually remove from array (this is a fallback)
+            results.splice(allResultsIndex, 1);
+            results = [...results]; // Trigger reactivity
+          }
+        }
+      }
     }
   }
 
   function exportResults() {
     const dataStr = JSON.stringify(filteredResults, null, 2);
-    const dataBlob = new Blob([dataStr], { type: 'application/json' });
+    const dataBlob = new Blob([dataStr], { type: "application/json" });
     const url = URL.createObjectURL(dataBlob);
-    
-    const link = document.createElement('a');
+
+    const link = document.createElement("a");
     link.href = url;
-    link.download = `test-results-${new Date().toISOString().split('T')[0]}.json`;
+    link.download = `test-results-${new Date().toISOString().split("T")[0]}.json`;
     link.click();
-    
+
     URL.revokeObjectURL(url);
   }
 
   // Calculate statistics
   $: statistics = {
     total: results.length,
-    passed: results.filter(r => r.status === 'passed').length,
-    failed: results.filter(r => r.status === 'failed').length,
-    error: results.filter(r => r.status === 'error').length,
-    skipped: results.filter(r => r.status === 'skipped').length,
-    avgDuration: results.length > 0 
-      ? Math.round(results.reduce((sum, r) => sum + (r.duration || 0), 0) / results.length)
-      : 0,
-    successRate: results.length > 0 
-      ? Math.round((results.filter(r => r.status === 'passed').length / results.length) * 100)
-      : 0
+    passed: results.filter((r) => r.status?.toLowerCase() === "passed").length,
+    failed: results.filter((r) => r.status?.toLowerCase() === "failed").length,
+    error: results.filter((r) => r.status?.toLowerCase() === "error").length,
+    skipped: results.filter((r) => r.status?.toLowerCase() === "skipped")
+      .length,
+    avgDuration:
+      results.length > 0
+        ? Math.round(
+            results.reduce((sum, r) => sum + (r.duration || 0), 0) /
+              results.length,
+          )
+        : 0,
+    successRate:
+      results.length > 0
+        ? Math.round(
+            (results.filter((r) => r.status?.toLowerCase() === "passed")
+              .length /
+              results.length) *
+              100,
+          )
+        : 0,
   };
+
+  // Create sample data for testing (remove this in production)
+  function createSampleData() {
+    console.log("📊 Creating sample test results...");
+
+    // Add some sample results
+    for (let i = 0; i < 3; i++) {
+      testStore.addResult({
+        testId: "sample-test-" + i,
+        testName: `Sample Test ${i + 1}`,
+        status: i === 0 ? "passed" : i === 1 ? "failed" : "error",
+        duration: Math.floor(Math.random() * 5000) + 1000,
+        error: i === 1 ? "Element not found: login button" : null,
+        logs: [
+          "Browser launched",
+          "Page navigated successfully",
+          i === 1 ? "Failed to find element" : "Test completed successfully",
+        ],
+        timestamp: new Date(Date.now() - i * 1000 * 60 * 60).toISOString(),
+      });
+    }
+  }
 </script>
 
 <div class="results-panel">
@@ -171,6 +293,18 @@
             🗑️ Clear All
           </button>
         </div>
+      </div>
+
+      <!-- Debug Info (Remove in production) -->
+      <div class="debug-section">
+        <div class="debug-title">🐛 Debug Info</div>
+        <div class="debug-content">
+          Raw Results: {debugInfo.rawResults} | Tests: {debugInfo.testsCount} | Filtered:
+          {debugInfo.filteredCount} | Filter: {selectedFilter}
+        </div>
+        <button on:click={createSampleData} class="btn btn-small btn-secondary">
+          🧪 Create Sample Data
+        </button>
       </div>
 
       <!-- Statistics Cards -->
@@ -244,12 +378,18 @@
         {#if filteredResults.length === 0}
           <div class="empty-state">
             <div class="empty-icon">📈</div>
-            <div class="empty-text">No test results found</div>
+            <div class="empty-text">
+              {#if results.length === 0}
+                No test results found
+              {:else}
+                No results match your filters
+              {/if}
+            </div>
             <div class="empty-subtext">
               {#if results.length === 0}
                 Run some tests to see results here
               {:else}
-                Try adjusting your filters
+                Try adjusting your filters above
               {/if}
             </div>
           </div>
@@ -257,44 +397,90 @@
           <div class="results-count">
             Showing {filteredResults.length} of {results.length} results
           </div>
-          
-          {#each filteredResults as result (result.id)}
+
+          {#each filteredResults as result, index (getResultKey(result, index))}
             <div class="result-item">
-              <div class="result-header" on:click={() => toggleDetails(result.id)}>
+              <div
+                class="result-header"
+                on:click={() => toggleDetails(getResultKey(result, index))}
+              >
                 <div class="result-main">
-                  <span class="result-status" style="color: {getStatusColor(result.status)}">
+                  <span
+                    class="result-status"
+                    style="color: {getStatusColor(result.status)}"
+                  >
                     {getStatusIcon(result.status)}
                   </span>
                   <div class="result-info">
-                    <div class="result-test-name">{getTestName(result.testId)}</div>
+                    <div class="result-test-name">
+                      {getTestName(result.testId)}
+                    </div>
                     <div class="result-meta">
-                      {formatTimestamp(result.timestamp)} • {formatDuration(result.duration)}
+                      {formatTimestamp(result.timestamp)} • {formatDuration(
+                        result.duration,
+                      )}
                     </div>
                   </div>
                 </div>
-                
+
                 <div class="result-actions">
-                  <button 
+                  <button
                     class="btn btn-tiny"
-                    on:click|stopPropagation={() => toggleDetails(result.id)}
+                    on:click|stopPropagation={() => toggleDetails(getResultKey(result, index))}
                   >
-                    {showDetails.has(result.id) ? '▼' : '▶'}
+                    {showDetails.has(getResultKey(result, index)) ? "▼" : "▶"}
                   </button>
-                  <button 
+                  <button
                     class="btn btn-tiny btn-danger"
-                    on:click|stopPropagation={() => deleteResult(result.id)}
+                    on:click|stopPropagation={() => deleteResult(getResultKey(result, index))}
                   >
                     🗑️
                   </button>
                 </div>
               </div>
 
-              {#if showDetails.has(result.id)}
+              {#if showDetails.has(getResultKey(result, index))}
                 <div class="result-details">
                   {#if result.error}
                     <div class="detail-section">
                       <h4 class="detail-title">Error Message</h4>
                       <div class="error-message">{result.error}</div>
+                    </div>
+                  {/if}
+
+                  {#if result.detailedError?.individualTests && result.detailedError.individualTests.length > 0}
+                    <div class="detail-section">
+                      <h4 class="detail-title">Individual Test Results ({result.detailedError.individualTests.length})</h4>
+                      <div class="individual-tests">
+                        {#each result.detailedError.individualTests as individualTest}
+                          <div class="individual-test" class:failed={individualTest.status === 'failed'}>
+                            <div class="test-header">
+                              <span class="test-status" style="color: {getStatusColor(individualTest.status)}">
+                                {getStatusIcon(individualTest.status)}
+                              </span>
+                              <span class="test-title">{individualTest.title}</span>
+                              <span class="test-duration">{formatDuration(individualTest.duration)}</span>
+                            </div>
+                            {#if individualTest.error}
+                              <div class="test-error">{individualTest.error}</div>
+                            {/if}
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+
+                  {#if result.detailedError?.stderr}
+                    <div class="detail-section">
+                      <h4 class="detail-title">Error Output (stderr)</h4>
+                      <div class="console-output error-output">{result.detailedError.stderr}</div>
+                    </div>
+                  {/if}
+
+                  {#if result.detailedError?.stdout}
+                    <div class="detail-section">
+                      <h4 class="detail-title">Console Output (stdout)</h4>
+                      <div class="console-output">{result.detailedError.stdout}</div>
                     </div>
                   {/if}
 
@@ -309,40 +495,35 @@
                     </div>
                   {/if}
 
-                  {#if result.screenshots && result.screenshots.length > 0}
-                    <div class="detail-section">
-                      <h4 class="detail-title">Screenshots</h4>
-                      <div class="screenshots-grid">
-                        {#each result.screenshots as screenshot}
-                          <div class="screenshot-item">
-                            <img src={screenshot.url} alt={screenshot.name} class="screenshot-image" />
-                            <div class="screenshot-name">{screenshot.name}</div>
-                          </div>
-                        {/each}
-                      </div>
-                    </div>
-                  {/if}
-
                   <div class="detail-section">
                     <h4 class="detail-title">Execution Details</h4>
                     <div class="details-grid">
                       <div class="detail-item">
                         <span class="detail-key">Status:</span>
-                        <span class="detail-value" style="color: {getStatusColor(result.status)}">
-                          {result.status.toUpperCase()}
+                        <span
+                          class="detail-value"
+                          style="color: {getStatusColor(result.status)}"
+                        >
+                          {result.status?.toUpperCase() || "UNKNOWN"}
                         </span>
                       </div>
                       <div class="detail-item">
                         <span class="detail-key">Duration:</span>
-                        <span class="detail-value">{formatDuration(result.duration)}</span>
+                        <span class="detail-value"
+                          >{formatDuration(result.duration)}</span
+                        >
                       </div>
                       <div class="detail-item">
                         <span class="detail-key">Executed:</span>
-                        <span class="detail-value">{formatTimestamp(result.timestamp)}</span>
+                        <span class="detail-value"
+                          >{formatTimestamp(result.timestamp)}</span
+                        >
                       </div>
                       <div class="detail-item">
                         <span class="detail-key">Test ID:</span>
-                        <span class="detail-value">{result.testId}</span>
+                        <span class="detail-value"
+                          >{result.testId || "Unknown"}</span
+                        >
                       </div>
                     </div>
                   </div>
@@ -360,19 +541,25 @@
     <div class="panel-content">
       <h3 class="panel-title">📈 Analytics</h3>
 
-      <!-- Success Rate Chart (Visual representation) -->
+      <!-- Success Rate Chart -->
       <div class="chart-section">
         <h4 class="chart-title">Success Rate Overview</h4>
         <div class="chart-container">
           <div class="success-rate-chart">
             <div class="chart-bar">
-              <div 
+              <div
                 class="chart-bar-fill success"
-                style="width: {statistics.total > 0 ? (statistics.passed / statistics.total) * 100 : 0}%"
+                style="width: {statistics.total > 0
+                  ? (statistics.passed / statistics.total) * 100
+                  : 0}%"
               ></div>
-              <div 
+              <div
                 class="chart-bar-fill error"
-                style="width: {statistics.total > 0 ? ((statistics.failed + statistics.error) / statistics.total) * 100 : 0}%"
+                style="width: {statistics.total > 0
+                  ? ((statistics.failed + statistics.error) /
+                      statistics.total) *
+                    100
+                  : 0}%"
               ></div>
             </div>
             <div class="chart-labels">
@@ -393,31 +580,38 @@
         <div class="activity-list">
           {#each results.slice(0, 10) as result}
             <div class="activity-item">
-              <span class="activity-status" style="color: {getStatusColor(result.status)}">
+              <span
+                class="activity-status"
+                style="color: {getStatusColor(result.status)}"
+              >
                 {getStatusIcon(result.status)}
               </span>
               <div class="activity-content">
                 <div class="activity-test">{getTestName(result.testId)}</div>
-                <div class="activity-time">{formatTimestamp(result.timestamp)}</div>
+                <div class="activity-time">
+                  {formatTimestamp(result.timestamp)}
+                </div>
               </div>
-              <div class="activity-duration">{formatDuration(result.duration)}</div>
+              <div class="activity-duration">
+                {formatDuration(result.duration)}
+              </div>
             </div>
           {/each}
-          
+
           {#if results.length === 0}
-            <div class="activity-empty">
-              No recent activity
-            </div>
+            <div class="activity-empty">No recent activity</div>
           {/if}
         </div>
       </div>
 
-      <!-- Test Performance -->
+      <!-- Performance Metrics -->
       <div class="performance-section">
         <h4 class="performance-title">Performance Metrics</h4>
         <div class="metrics-grid">
           <div class="metric-item">
-            <div class="metric-value">{formatDuration(statistics.avgDuration)}</div>
+            <div class="metric-value">
+              {formatDuration(statistics.avgDuration)}
+            </div>
             <div class="metric-label">Avg Duration</div>
           </div>
           <div class="metric-item">
@@ -444,7 +638,8 @@
     height: 100%;
   }
 
-  .left-panel, .right-panel {
+  .left-panel,
+  .right-panel {
     overflow-y: auto;
   }
 
@@ -480,6 +675,29 @@
   .header-actions {
     display: flex;
     gap: 0.5rem;
+  }
+
+  /* Debug Section (Remove in production) */
+  .debug-section {
+    background-color: #fef3c7;
+    border: 1px solid #f59e0b;
+    border-radius: 0.375rem;
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+  }
+
+  .debug-title {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: #92400e;
+    margin-bottom: 0.5rem;
+  }
+
+  .debug-content {
+    font-size: 0.75rem;
+    color: #92400e;
+    font-family: monospace;
+    margin-bottom: 0.5rem;
   }
 
   .stats-grid {
@@ -665,30 +883,6 @@
     margin-bottom: 0.25rem;
   }
 
-  .screenshots-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 0.75rem;
-  }
-
-  .screenshot-item {
-    text-align: center;
-  }
-
-  .screenshot-image {
-    width: 100%;
-    height: 100px;
-    object-fit: cover;
-    border-radius: 0.375rem;
-    border: 1px solid #e5e7eb;
-  }
-
-  .screenshot-name {
-    font-size: 0.75rem;
-    color: #6b7280;
-    margin-top: 0.25rem;
-  }
-
   .details-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -777,7 +971,9 @@
     margin: 0 0 1.5rem 0;
   }
 
-  .chart-section, .activity-section, .performance-section {
+  .chart-section,
+  .activity-section,
+  .performance-section {
     background-color: white;
     border: 1px solid #e5e7eb;
     border-radius: 0.5rem;
@@ -785,7 +981,9 @@
     margin-bottom: 1.5rem;
   }
 
-  .chart-title, .activity-title, .performance-title {
+  .chart-title,
+  .activity-title,
+  .performance-title {
     font-size: 1rem;
     font-weight: 500;
     color: #111827;
@@ -888,6 +1086,7 @@
     padding: 1rem;
     background-color: #f8fafc;
     border-radius: 0.375rem;
+    border: 1px solid #e2e8f0;
   }
 
   .metric-value {
@@ -900,5 +1099,88 @@
   .metric-label {
     font-size: 0.75rem;
     color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* Enhanced error display styles */
+  .individual-tests {
+    background-color: #f8fafc;
+    border-radius: 0.375rem;
+    padding: 0.75rem;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+
+  .individual-test {
+    background-color: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.375rem;
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .individual-test:last-child {
+    margin-bottom: 0;
+  }
+
+  .individual-test.failed {
+    border-color: #fca5a5;
+    background-color: #fef2f2;
+  }
+
+  .test-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .test-status {
+    font-size: 1rem;
+  }
+
+  .test-title {
+    flex: 1;
+    font-weight: 500;
+    color: #111827;
+    font-size: 0.875rem;
+  }
+
+  .test-duration {
+    font-size: 0.75rem;
+    color: #6b7280;
+    font-family: monospace;
+  }
+
+  .test-error {
+    background-color: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 0.25rem;
+    padding: 0.5rem;
+    font-family: monospace;
+    font-size: 0.75rem;
+    color: #991b1b;
+    margin-top: 0.5rem;
+    white-space: pre-wrap;
+  }
+
+  .console-output {
+    background-color: #1f2937;
+    color: #f9fafb;
+    border-radius: 0.375rem;
+    padding: 0.75rem;
+    font-family: monospace;
+    font-size: 0.75rem;
+    max-height: 200px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    line-height: 1.4;
+  }
+
+  .console-output.error-output {
+    background-color: #7f1d1d;
+    color: #fef2f2;
+    border: 1px solid #dc2626;
   }
 </style>
