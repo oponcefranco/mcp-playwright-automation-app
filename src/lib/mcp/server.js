@@ -406,7 +406,7 @@ class PlaywrightMCPServer {
     }
 
     enhanceTestCode(testCode, options) {
-        const imports = `const { test, expect } = require('@playwright/test');`;
+        const imports = `import { test, expect } from '@playwright/test';`;
 
         const authSetup = options.auth ? `
 // Authentication setup

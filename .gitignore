@@ -146,3 +146,6 @@ vite.config.ts.timestamp-*
 
 # MCP Server temporary files
 mcp-server/
+
+# Test Results
+test-results/

@@ -289,7 +289,7 @@ class PlaywrightMCPServer {
         const timeout = config.timeout || 30000;
 
         return `// playwright.config.js
-import { defineConfig } from '@playwright/test';
+import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: '.',
