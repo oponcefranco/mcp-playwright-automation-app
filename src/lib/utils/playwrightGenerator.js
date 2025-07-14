@@ -3,7 +3,7 @@ class PlaywrightGenerator {
     console.log('🎭 PlaywrightGenerator initialized');
 
     this.templates = {
-      imports: `const { test, expect } = require('@playwright/test');`,
+      imports: `import { test, expect } from '@playwright/test';`,
 
       authHelper: `
 // Authentication Helper
@@ -25,17 +25,17 @@ class AuthHelper {
   }
 }`,
 
-      testStructure: (name, steps, config) => `
-test('${name}', async ({ page }) => {
-  const authHelper = new AuthHelper(page);
-  
-  ${config.customHeaders && Object.keys(config.customHeaders).length > 0
-          ? `// Set custom headers
-  await authHelper.setAuthHeaders(${JSON.stringify(config.customHeaders, null, 2)});`
+      testStructure: (name, steps, config) => {
+        const hasAuth = config.customHeaders && Object.keys(config.customHeaders).length > 0;
+        return `
+test('${name}', async ({ page }) => {${hasAuth ? '\n  const authHelper = new AuthHelper(page);' : ''}
+  ${hasAuth
+          ? `\n  // Set custom headers\n  await authHelper.setAuthHeaders(${JSON.stringify(config.customHeaders, null, 2)});`
           : ''}
   
   ${steps.map(step => this.generateStepCode(step)).join('\n  ')}
-});`
+});`;
+      }
     };
   }
 
@@ -53,17 +53,15 @@ test('${name}', async ({ page }) => {
 
     try {
       const imports = this.templates.imports;
-      const authHelper = this.templates.authHelper;
+      const hasAuth = customHeaders && Object.keys(customHeaders).length > 0;
+      const authHelper = hasAuth ? this.templates.authHelper : '';
       const testCode = this.templates.testStructure(name, steps, { customHeaders });
 
-      const fullTest = `${imports}
-
-${authHelper}
-
-${testCode}`;
+      const fullTest = `${imports}${authHelper ? '\n\n' + authHelper : ''}\n\n${testCode}`;
 
       console.log('✅ Test generated successfully');
       console.log('📄 Generated test length:', fullTest.length, 'characters');
+      console.log('🔐 Authentication enabled:', hasAuth);
 
       return fullTest;
     } catch (error) {
